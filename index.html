@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bonfire - The Game</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="bg-light">
+  <!-- Navbar -->
+  <nav class="navbar navbar-expand-lg navbar-dark">
+    <div class="container">
+      <!-- img icon -->
+      <img src="assets/images/site/site_logo.png" style="max-width: 4rem;" alt="Bonfire Icon" class="navbar-brand">
+      <a class="navbar-brand" style="font-size: calc(1rem + 1vw);" href="#">Bonfire</a>
+      <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav ml-auto">
+          <li class="nav-item">
+            <button class="btn nav-link" id="settings-btn">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-gear-fill" viewBox="0 0 16 16">
+                <path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34z"/>
+              </svg>
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="container MainContentWrapper text-light">
+    <div id="character-creator-modal" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="characterCreatorTitle" aria-hidden="true">
+      <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header">
+            <h5 class="modal-title" id="characterCreatorTitle">Character Creator</h5>
+          </div>
+          <div class="modal-body">
+            <div class="row" style="margin-bottom: 1rem;">
+              <!-- Name and Color -->
+              <div class="col-md-6">
+                <label>Display Name</label>
+                <input type="text" id="display-name-input" class="form-control bg-dark text-light" maxlength="20" placeholder="Enter your name">
+              </div>
+              <div class="col-md-6">
+                <label>Chat Color</label>
+                <input type="color" id="chat-color-input" class="form-control" value="#88ff88">
+              </div>
+            </div>
+
+            <div class="row">
+              <!-- Character Assets -->
+              <div class="col-md-6">
+                <!-- Character Controls -->
+                <div class="form-group control-group">
+                  <label>Skin</label>
+                  <div class="d-flex align-items-center justify-content-between">
+                    <div class="btn-group">
+                      <button class="btn btn-light" onclick="cycleAsset('skin', -1)">←</button>
+                      <span class="mx-3 index-display" id="skin-index">1/6</span>
+                      <button class="btn btn-light" onclick="cycleAsset('skin', 1)">→</button>
+                    </div>
+                  </div>
+                </div>
+    
+                <div class="form-group control-group">
+                  <label>Eyes</label>
+                  <div class="d-flex align-items-center justify-content-between">
+                    <div class="btn-group">
+                      <button class="btn btn-light" onclick="cycleAsset('eyes', -1)">←</button>
+                      <span class="mx-3 index-display" id="eyes-index">1/8</span>
+                      <button class="btn btn-light" onclick="cycleAsset('eyes', 1)">→</button>
+                    </div>
+                  </div>
+                </div>
+    
+                <div class="form-group control-group">
+                  <label>Hair</label>
+                  <div class="d-flex align-items-center justify-content-between">
+                    <div class="btn-group">
+                      <button class="btn btn-light" onclick="cycleAsset('hair', -1)">←</button>
+                      <span class="mx-3 index-display" id="hair-index">1/18</span>
+                      <button class="btn btn-light" onclick="cycleAsset('hair', 1)">→</button>
+                    </div>
+                  </div>
+                </div>
+    
+                <div class="form-group control-group">
+                  <label>Top</label>
+                  <div class="d-flex align-items-center justify-content-between">
+                    <div class="btn-group">
+                      <button class="btn btn-light" onclick="cycleAsset('top', -1)">←</button>
+                      <span class="mx-3 index-display" id="top-index">1/10</span>
+                      <button class="btn btn-light" onclick="cycleAsset('top', 1)">→</button>
+                    </div>
+                  </div>
+                </div>
+    
+                <div class="form-group control-group">
+                  <label>Bottoms</label>
+                  <div class="d-flex align-items-center justify-content-between">
+                    <div class="btn-group">
+                      <button class="btn btn-light" onclick="cycleAsset('bottoms', -1)">←</button>
+                      <span class="mx-3 index-display" id="bottoms-index">1/9</span>
+                      <button class="btn btn-light" onclick="cycleAsset('bottoms', 1)">→</button>
+                    </div>
+                  </div>
+                </div>
+    
+                <div class="form-group control-group">
+                  <label>Shoes</label>
+                  <div class="d-flex align-items-center justify-content-between">
+                    <div class="btn-group">
+                      <button class="btn btn-light" onclick="cycleAsset('shoes', -1)">←</button>
+                      <span class="mx-3 index-display" id="shoes-index">1/11</span>
+                      <button class="btn btn-light" onclick="cycleAsset('shoes', 1)">→</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+    
+              <!-- Character Preview -->
+              <div class="col-md-6">
+                <div class="preview-container">
+                  <canvas id="character-preview" width="256" height="256" class="character-preview"></canvas>
+                </div>
+                <div class="d-flex justify-content-center mt-3">
+                  <button id="confirm-character" class="btn btn-primary">Done</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="game-area" class="rounded text-light">
+      <button id="connect-btn" class="btn btn-primary">Connect</button>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="bg-dark text-light text-center py-3 mt-5">
+    <p>&copy; 2025 Bonfire - The Game. All rights reserved.</p>
+  </footer>
+
+  <!-- Optional JavaScript -->
+  <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/popper.js@1.14.7/dist/umd/popper.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/js/bootstrap.min.js" crossorigin="anonymous"></script>
+
+  <!-- Custom JavaScript -->
+  <script src="js/config.js"></script>
+  <script src="js/character.js"></script>
+  <script src="js/scene.js"></script>
+  <script src="js/peer.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
