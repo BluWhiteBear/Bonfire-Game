@@ -1,3 +1,5 @@
+import { connectToPeer, sendGameMessage, closeConnection } from './peer.js';
+
 const PRESET_KEY = 'character_preset';
 
 // Character asset configuration
@@ -21,14 +23,6 @@ const characterAssets = {
   
   // Load all images and cache them
   const loadedAssets = {};
-  Object.entries(characterAssets).forEach(([category, assets]) => {
-    assets.forEach(asset => {
-      const img = new Image();
-      img.src = `assets/images/character/${category}/${asset}`;
-      loadedAssets[`${category}/${asset}`] = img;
-    });
-  });
-
   Object.entries(characterAssets).forEach(([category, assets]) => {
     assets.forEach(asset => {
       const img = new Image();
@@ -172,3 +166,11 @@ const characterAssets = {
       }
     });
   }
+
+  export {
+    loadCharacterPreset,
+    renderCharacterPreview,
+    saveCharacterPreset,
+    updatePlayerAvatar,
+    cycleAsset // If you need this elsewhere
+  };

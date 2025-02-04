@@ -6,6 +6,22 @@
   <title>Bonfire - The Game</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
   <link rel="stylesheet" href="css/styles.css">
+  <style>
+    #game-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      perspective: 1000;
+      overflow: hidden;
+    }
+    
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+  </style>
 </head>
 <body class="bg-light">
   <!-- Navbar -->
@@ -19,6 +35,12 @@
       </button>
       <div class="collapse navbar-collapse" id="navbarNav">
         <ul class="navbar-nav ml-auto">
+          <li class="nav-item">
+            <a class="nav-link" href="index.html">Home</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="editor.html">Editor</a>
+          </li>
           <li class="nav-item">
             <button class="btn nav-link" id="settings-btn">
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-gear-fill" viewBox="0 0 16 16">
@@ -137,7 +159,7 @@
         </div>
       </div>
     </div>
-
+    <div id="fps-counter" style="position:fixed;top:10px;left:10px;color:white;background:rgba(0,0,0,0.5);padding:5px;"></div>
     <div id="game-area" class="rounded text-light">
       <button id="connect-btn" class="btn btn-primary">Connect</button>
     </div>
@@ -152,13 +174,14 @@
   <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/popper.js@1.14.7/dist/umd/popper.min.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/js/bootstrap.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
 
   <!-- Custom JavaScript -->
-  <script src="js/config.js"></script>
-  <script src="js/character.js"></script>
-  <script src="js/scene.js"></script>
-  <script src="js/peer.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/main.js"></script>
+  <script src="js/config.js" type="module"></script>
+  <script src="js/character.js" type="module"></script>
+  <script src="js/scene.js" type="module"></script>
+  <script src="js/peer.js" type="module"></script>
+  <script src="js/main.js" type="module"></script>
+  <script src="js/ui.js" type="module"></script>
 </body>
 </html>

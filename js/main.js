@@ -1,51 +1,105 @@
+import { connectToPeer, sendGameMessage, closeConnection } from './peer.js';
+import { TILEMAP_CONFIG } from './scene.js';
+
+// Constants
 const PLAYER_TIMEOUT = 15000; // 15 seconds timeout
-
+const FPS_UPDATE_INTERVAL = 500; // Update every 500ms
+const FRAME_TIME = 1000 / 60; // Target 60 FPS
 const MOVEMENT_INTERVAL = 50; // Send position updates every 50ms
-let lastMovementSent = 0;
-let lastKnownPositions = new Map(); // Store positions for interpolation
+const CHAT_MAX_MESSAGES = 50; // Maximum chat messages
+const MESSAGE_DURATION = 3000; // 3 seconds per message
+const MAX_STACKED_MESSAGES = 3; // Maximum stacked messages
+const CACHE_SIZE = 100;
+const PLAYER_SPEED = 2; // Player movement speed in pixels per frame
+const MOVEMENT_FRAME_TIME = 1000 / 60; // Consistent 60fps for movement
+const RENDER_SCALE = window.devicePixelRatio || 1;
 
-let gameState = {
+const EMOJIS = {
+  ':alert:': 'assets/images/ui/emotes/emote_alert.png',
+  ':anger:': 'assets/images/ui/emotes/emote_anger.png',
+  ':bars:': 'assets/images/ui/emotes/emote_bars.png',
+  ':cash:': 'assets/images/ui/emotes/emote_cash.png',
+  ':circle:': 'assets/images/ui/emotes/emote_circle.png',
+  ':cloud:': 'assets/images/ui/emotes/emote_cloud.png',
+  ':cross:': 'assets/images/ui/emotes/emote_cross.png',
+  ':dots1:': 'assets/images/ui/emotes/emote_dots1.png',
+  ':dots2:': 'assets/images/ui/emotes/emote_dots2.png',
+  ':dots3:': 'assets/images/ui/emotes/emote_dots3.png',
+  ':drop:': 'assets/images/ui/emotes/emote_drop.png',
+  ':drops:': 'assets/images/ui/emotes/emote_drops.png',
+  ':exclamation:': 'assets/images/ui/emotes/emote_exclamation.png',
+  ':exclamations:': 'assets/images/ui/emotes/emote_exclamations.png',
+  ':angry:': 'assets/images/ui/emotes/emote_faceAngry.png',
+  ':happy:': 'assets/images/ui/emotes/emote_faceHappy.png',
+  ':sad:': 'assets/images/ui/emotes/emote_faceSad.png',
+  ':heart:': 'assets/images/ui/emotes/emote_heart.png',
+  ':heartbroken:': 'assets/images/ui/emotes/emote_heartBroken.png',
+  ':hearts:': 'assets/images/ui/emotes/emote_hearts.png',
+  ':idea:': 'assets/images/ui/emotes/emote_idea.png',
+  ':laugh:': 'assets/images/ui/emotes/emote_laugh.png',
+  ':music:': 'assets/images/ui/emotes/emote_music.png',
+  ':question:': 'assets/images/ui/emotes/emote_question.png',
+  ':sleep:': 'assets/images/ui/emotes/emote_sleep.png',
+  ':sleeps:': 'assets/images/ui/emotes/emote_sleeps.png',
+  ':star:': 'assets/images/ui/emotes/emote_star.png',
+  ':stars:': 'assets/images/ui/emotes/emote_stars.png',
+  ':swirl:': 'assets/images/ui/emotes/emote_swirl.png',
+  // Add more emoji mappings here
+};
+
+const EMOJI_CATEGORIES = {
+  faces: [':angry:', ':happy:', ':sad:'],
+  symbols: [':heart:', ':hearts:', ':heartbroken:', ':laugh:', ':sleep:', ':sleeps:', ':star:', ':stars:', ':question:', ':exclamation:', ':exclamations:', ':idea:'],
+  misc: [':cloud:', ':drop:', ':drops:', ':swirl:', ':music:', ':bars:', ':cash:', ':circle:', ':cross:', ':dots1:', ':dots2:', ':dots3:']
+};
+
+let wasConnected = false;
+let sceneCanvas = null;
+let sceneContext = null;
+let chatBox = null;
+let gameCtx = null;
+
+// Performance Tracking
+let fpsValues = [];
+let lastFpsUpdate = 0;
+let lastRenderTime = 0;
+let lastMovementSent = 0;
+
+export let gameState = {
   players: [], //{id, x, y, avatar}
   messages: [],
   localPlayer: null,
   currentScene: null
 };
 
+// Element pooling
+const playerElements = new Map();
+const elementPool = {
+  div: Array(CACHE_SIZE).fill(null).map(() => document.createElement('div')),
+  img: Array(CACHE_SIZE).fill(null).map(() => document.createElement('img'))
+};
+
+const chatElementPool = {
+  messages: Array(CHAT_MAX_MESSAGES).fill(null).map(() => {
+    const div = document.createElement('div');
+    div.className = 'chat-message';
+    return div;
+  }),
+  spans: Array(CHAT_MAX_MESSAGES).fill(null).map(() => {
+    const span = document.createElement('span');
+    span.className = 'chat-name';
+    return span;
+  })
+};
+
+// DOM References
 const gameArea = document.getElementById("game-area");
 
-setInterval(() => {
-  if (!gameState.players.length) return;
-  
-  const now = Date.now();
-  const activePlayers = gameState.players.filter(player => {
-    // Don't timeout local player
-    if (player.id === gameState.localPlayer?.id) return true;
-    
-    // Keep players with recent activity
-    const isActive = player.lastSeen && (now - player.lastSeen < PLAYER_TIMEOUT);
-    
-    // Log timeout for debugging
-    if (!isActive) {
-      console.log(`Player ${player.displayName} timed out:`, {
-        now,
-        lastSeen: player.lastSeen,
-        timeSinceLastSeen: now - (player.lastSeen || 0)
-      });
-    }
-    
-    return isActive;
-  });
-  
-  if (activePlayers.length !== gameState.players.length) {
-    // console.log('Removing disconnected players');
-    updateGameState({
-      players: activePlayers
-    });
-  }
-}, 5000);
-  
+
+let lastKnownPositions = new Map(); // Store positions for interpolation
+
 // Update game state
-const updateGameState = (data) => {
+export const updateGameState = (data) => {
   gameState = {
     ...gameState,
     ...data,
@@ -78,255 +132,194 @@ const updateGameState = (data) => {
   renderGame();
 };
 
-// Render game area
-let chatBox = null;
-const renderGame = () => {
+// Render game
+function renderGame(timestamp) {
+  if (timestamp - lastRenderTime < FRAME_TIME) {
+    requestAnimationFrame(renderGame);
+    return;
+  }
+
   if (!gameArea) return;
-  
-  // Save connection elements before clearing
-  const existingStatus = document.getElementById('connection-status');
-  const existingConnectBtn = document.getElementById('connect-btn');
-  const wasConnected = existingConnectBtn?.style.display === 'none';
-  
-  // Save chat state if connected
-  let chatState = null;
-  let newChatInput = null; // Declare at top of function
-  
-  if (wasConnected) {
-    const chatInput = document.getElementById('global-chat-input');
-    chatState = {
-      wasFocused: document.activeElement === chatInput,
-      value: chatInput?.value || '',
-      selectionStart: chatInput?.selectionStart,
-      selectionEnd: chatInput?.selectionEnd
-    };
-  }
-  
-  // Clear game area
-  gameArea.innerHTML = '';
 
-  // Create game container
-  const gameContainer = document.createElement('div');
-  gameContainer.style.cssText = `
-    position: relative;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    background: #000;
-  `;
-  gameArea.appendChild(gameContainer);
-
-  if (wasConnected) {
-    // Create or restore chat box
-    if (!chatBox) {
-      chatBox = document.createElement('div');
-      chatBox.className = 'chat-box';
-      chatBox.innerHTML = `
-        <div class="chat-messages"></div>
-        <div class="chat-input-container">
-          <div class="chat-input-group">
-            <input type="text" id="global-chat-input" placeholder="Press Enter to chat..." maxlength="200">
-            <button class="emoji-toggle" type="button">😊</button>
-            <div class="emoji-picker"></div>
-          </div>
-        </div>
-      `;
-      
-      initializeEmojiPicker(chatBox);
-    }
-    
-    // Add chat box to container
-    gameContainer.appendChild(chatBox);
-
-    // Get fresh reference to chat input after adding to DOM
-    newChatInput = document.getElementById('global-chat-input');
-
-    // Restore chat input state if we had any
-    if (chatState && newChatInput) {
-      newChatInput.value = chatState.value;
-      if (chatState.wasFocused) {
-        newChatInput.setSelectionRange(chatState.selectionStart, chatState.selectionEnd);
-        requestAnimationFrame(() => {
-          newChatInput.focus();
-        });
-      }
-    }
-  }
-
-  // Restore connection elements if they existed
-  if (existingConnectBtn) {
-    existingConnectBtn.style.cssText = `
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      z-index: 1000;
-      display: ${wasConnected ? 'none' : 'block !important'};
+  // Create or get game container
+  let gameContainer = document.getElementById('game-container');
+  if (!gameContainer) {
+    gameContainer = document.createElement('div');
+    gameContainer.id = 'game-container';
+    gameContainer.style.cssText = `
+      position: relative;
+      width: 100%;
+      height: 100%;
+      // background-color: black;
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      z-index: 1;
     `;
-    gameArea.appendChild(existingConnectBtn);
+    gameArea.appendChild(gameContainer);
   }
 
-  // Render scene first if we have one
-  if (gameState.currentScene) {
-    const sceneWidth = gameState.currentScene.width * TILEMAP_CONFIG.TILE_SIZE * TILEMAP_CONFIG.SCALE;
-    const sceneHeight = gameState.currentScene.height * TILEMAP_CONFIG.TILE_SIZE * TILEMAP_CONFIG.SCALE;
-    const viewportX = gameState.currentScene.viewport?.x || 0;
-    const viewportY = gameState.currentScene.viewport?.y || 0;
+  if (!chatBox && gameState.localPlayer) {
+    chatBox = new ChatBox();
+    gameContainer.appendChild(chatBox.element);
+  }
 
-    const sceneCanvas = document.createElement('canvas');
-    sceneCanvas.width = sceneWidth;
-    sceneCanvas.height = sceneHeight;
-    sceneCanvas.style.cssText = `
-      position: absolute;
-      left: ${-viewportX}px;
-      top: ${-viewportY}px;
-    `;
+  // Initialize scene canvas and context
+  if (!gameCtx && gameState.currentScene?.isLoaded) {
+    const canvas = document.createElement('canvas');
+    canvas.width = gameArea.clientWidth;
+    canvas.height = gameArea.clientHeight;
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    gameCtx = canvas.getContext('2d');
+    gameCtx.imageSmoothingEnabled = false;
+    gameArea.appendChild(canvas);
+  }
+
+  // Render scene
+  if (gameCtx && gameState.currentScene?.isLoaded) {
+    gameState.currentScene.render(gameCtx);
     
-    const ctx = sceneCanvas.getContext('2d');
-    gameState.currentScene.render(ctx);
-    gameContainer.appendChild(sceneCanvas);
-
-    // Important: Render ALL players
+    // Update and render players
     if (gameState.players?.length > 0) {
-      // console.log('Rendering players:', gameState.players);
+      const viewportX = gameState.currentScene?.viewport?.x || 0;
+      const viewportY = gameState.currentScene?.viewport?.y || 0;
+  
       gameState.players.forEach(player => {
-        if (!player || !player.x || !player.y) return;
-        
-        const playerElement = document.createElement('div');
-        playerElement.style.cssText = `
-          position: absolute;
-          left: ${player.x - viewportX}px;
-          top: ${player.y - viewportY}px;
-          width: 64px;
-          height: 64px;
-          z-index: 2;
-          transform: translate(-50%, -50%);
-        `;
-
-        if (player.avatar) {
-          const avatarImg = document.createElement('img');
-          avatarImg.src = player.avatar;
-          avatarImg.style.cssText = 'width: 100%; height: 100%;';
-          playerElement.appendChild(avatarImg);
+        let playerElement = playerElements.get(player.id);
+        if (!playerElement) {
+          playerElement = createPlayerElement(player);
+          playerElements.set(player.id, playerElement);
+          gameContainer.appendChild(playerElement);
         }
-
-        gameContainer.appendChild(playerElement);
+  
+        // Update player position
+        playerElement.style.transform = 
+          `translate3d(${player.x - viewportX}px, ${player.y - viewportY}px, 0)`;
       });
     }
   }
 
-  // Then render all players
+  // Update and render players
   if (gameState.players?.length > 0) {
     const viewportX = gameState.currentScene?.viewport?.x || 0;
     const viewportY = gameState.currentScene?.viewport?.y || 0;
 
     gameState.players.forEach(player => {
-      // console.log('Rendering player:', player);
-      const playerElement = document.createElement('div');
-      playerElement.style.cssText = `
-        position: absolute;
-        left: ${player.x - viewportX}px;
-        top: ${player.y - viewportY}px;
-        width: 64px;
-        height: 64px;
-        z-index: 2;
-        transform: translate(-50%, -50%);
-      `;
-    
-      // Add player name
-      if (player.displayName) {
-        const nameTag = document.createElement('div');
-        nameTag.textContent = player.displayName;
-        nameTag.style.cssText = `
-          position: absolute;
-          width: 100%;
-          text-align: center;
-          top: -25px;
-          color: white;
-          text-shadow: 1px 1px 2px black;
-          font-weight: bold;
-        `;
-        playerElement.appendChild(nameTag);
+      let playerElement = playerElements.get(player.id);
+      if (!playerElement) {
+        playerElement = createPlayerElement(player);
+        playerElements.set(player.id, playerElement);
+        gameContainer.appendChild(playerElement);
       }
 
-      if (player.avatar) {
-        const avatarImg = document.createElement('img');
-        avatarImg.src = player.avatar;
-        avatarImg.style.cssText = 'width: 100%; height: 100%;';
-        playerElement.appendChild(avatarImg);
-      }
-
-      // if (player.message) {
-      //   const messageElement = createChatMessage(player.message);
-      //   playerElement.appendChild(messageElement);
-      // }
-
-      if (player.messageQueue && player.messageQueue.length > 0) {
-        const messageContainer = document.createElement('div');
-        messageContainer.style.cssText = `
-          position: absolute;
-          bottom: 100%;
-          left: 50%;
-          transform: translateX(-50%);
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-        `;
+      // Update player position
+      playerElement.style.transform = 
+        `translate3d(${player.x - viewportX}px, ${player.y - viewportY}px, 0)`;
       
-        player.messageQueue.forEach((msg, index) => {
-          const messageElement = document.createElement('div');
-          messageElement.style.cssText = `
-            background: rgba(0,0,0,0.7);
-            color: white;
-            padding: 4px 8px;
-            border-radius: 12px;
-            max-width: 200px;
-            min-width: 50px;
-            word-wrap: break-word;
-            text-align: center;
-            margin-bottom: 5px;
-            opacity: ${1 - (index * 0.2)};
-          `;
-      
-          // Handle emojis in message
-          const parts = msg.text.split(/(:[\w-]+:)/g);
-          parts.forEach(part => {
-            if (EMOJIS[part]) {
-              const emoji = document.createElement('img');
-              emoji.src = EMOJIS[part];
-              emoji.style.cssText = `
-                width: 24px;
-                height: 24px;
-                vertical-align: middle;
-                display: inline-block;
-                margin: 0 2px;
-              `;
-              messageElement.appendChild(emoji);
-            } else if (part.trim()) {
-              messageElement.appendChild(document.createTextNode(part));
-            }
-          });
-      
-          messageContainer.appendChild(messageElement);
-        });
-      
-        playerElement.appendChild(messageContainer);
-      }
-
-      gameContainer.appendChild(playerElement);
+      // Update player messages
+      updatePlayerMessages(player, playerElement);
     });
   }
 
-  // Restore connection UI elements
-  const connectBtn = document.getElementById('connect-btn');
-  if (connectBtn) {
-    gameContainer.appendChild(connectBtn);
+  // Create or update chat box
+  if (!chatBox) {
+    chatBox = new ChatBox();
+    gameContainer.appendChild(chatBox.element);
   }
-};
 
-// Message Queue Handling
-const MESSAGE_DURATION = 3000; // 3 seconds per message
-const MAX_STACKED_MESSAGES = 3; // Maximum stacked messages
+  const now = performance.now();
+  lastRenderTime = now;
+  requestAnimationFrame(renderGame);
+}
+requestAnimationFrame(renderGame);
+
+function createPlayerElement(player) {
+  const element = document.createElement('div');
+  element.className = 'player';
+  
+  // Add player name tag
+  const nameTag = document.createElement('div');
+  nameTag.className = 'player-name';
+  nameTag.textContent = player.displayName || 'Anonymous';
+  element.appendChild(nameTag);
+
+  // Add avatar
+  if (player.avatar) {
+    const avatar = document.createElement('img');
+    avatar.src = player.avatar;
+    avatar.style.width = '100%';
+    avatar.style.height = '100%';
+    element.appendChild(avatar);
+  }
+
+  return element;
+}
+
+function updatePlayerMessages(player, element) {
+  if (!player.messageQueue?.length) return;
+  
+  let msgContainer = element.querySelector('.message-container');
+  if (!msgContainer) {
+    msgContainer = elementPool.div.pop() || document.createElement('div');
+    msgContainer.className = 'message-container';
+    msgContainer.style.cssText = `
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: max-content;
+      min-width: 100px;
+    `;
+    element.appendChild(msgContainer);
+  }
+
+  // Update messages
+  while (msgContainer.children.length > player.messageQueue.length) {
+    elementPool.div.push(msgContainer.lastChild);
+    msgContainer.lastChild.remove();
+  }
+
+  player.messageQueue.forEach((msg, i) => {
+    let msgElement = msgContainer.children[i];
+    if (!msgElement) {
+      msgElement = elementPool.div.pop() || document.createElement('div');
+      msgElement.className = 'player-message';
+      msgElement.style.cssText = `
+        background: rgba(0,0,0,0.7);
+        color: white;
+        padding: 4px 8px;
+        border-radius: 12px;
+        text-align: center;
+        margin-bottom: 5px;
+        opacity: ${1 - (i * 0.2)};
+        word-wrap: break-word;
+        max-width: 200px;
+        min-width: 50px;
+      `;
+      msgContainer.appendChild(msgElement);
+    }
+
+    // Handle emojis in messages
+    msgElement.innerHTML = '';
+    const parts = msg.text.split(/(:[\w-]+:)/g);
+    parts.forEach(part => {
+      if (EMOJIS[part]) {
+        const emoji = elementPool.img.pop() || document.createElement('img');
+        emoji.src = EMOJIS[part];
+        emoji.style.cssText = 'width:24px;height:24px;vertical-align:middle;display:inline-block;margin:0 2px;';
+        msgElement.appendChild(emoji);
+      } else if (part.trim()) {
+        msgElement.appendChild(document.createTextNode(part));
+      }
+    });
+  });
+}
 
 // Add chat message to chat box
 const addChatMessage = (playerId, text) => {
@@ -336,32 +329,28 @@ const addChatMessage = (playerId, text) => {
     return;
   }
 
-  const messageDiv = document.createElement('div');
+  // Get or create message elements from pool
+  const messageDiv = chatElementPool.messages.pop() || document.createElement('div');
   messageDiv.className = 'chat-message';
   
-  const nameSpan = document.createElement('span');
+  const nameSpan = chatElementPool.spans.pop() || document.createElement('span');
   nameSpan.className = 'chat-name';
+  
+  // Set player name and color
   const player = gameState.players.find(p => p.id === playerId);
   nameSpan.textContent = player?.displayName || 'Anonymous';
-  // Ensure chat color is applied
   nameSpan.style.color = player?.chatColor || '#88ff88';
   
   messageDiv.appendChild(nameSpan);
   messageDiv.appendChild(document.createTextNode(': '));
 
-  // Handle emojis
+  // Handle emojis with optimized parsing
   const parts = text.split(/(:[\w-]+:)/g);
   parts.forEach(part => {
     if (EMOJIS[part]) {
-      const emoji = document.createElement('img');
+      const emoji = elementPool.img.pop() || document.createElement('img');
       emoji.src = EMOJIS[part];
-      emoji.style.cssText = `
-        width: 24px;
-        height: 24px;
-        vertical-align: middle;
-        display: inline-block;
-        margin: 0 2px;
-      `;
+      emoji.style.cssText = 'width:24px;height:24px;vertical-align:middle;display:inline-block;margin:0 2px;';
       messageDiv.appendChild(emoji);
     } else if (part.trim()) {
       messageDiv.appendChild(document.createTextNode(part));
@@ -371,11 +360,124 @@ const addChatMessage = (playerId, text) => {
   chatMessages.appendChild(messageDiv);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
-  // Limit number of messages
-  while (chatMessages.children.length > 50) {
-    chatMessages.removeChild(chatMessages.firstChild);
+  // Limit number of messages and recycle elements
+  while (chatMessages.children.length > CHAT_MAX_MESSAGES) {
+    const oldMsg = chatMessages.firstChild;
+    // Recycle elements back to pools
+    const nameSpan = oldMsg.querySelector('.chat-name');
+    if (nameSpan) chatElementPool.spans.push(nameSpan);
+    const emojis = oldMsg.querySelectorAll('img');
+    emojis.forEach(emoji => elementPool.img.push(emoji));
+    chatElementPool.messages.push(oldMsg);
+    oldMsg.remove();
   }
 };
+
+class ChatBox {
+  constructor() {
+    this.element = document.createElement('div');
+    this.element.className = 'chat-box';
+    this.element.innerHTML = `
+      <div class="chat-messages"></div>
+      <div class="chat-input-container">
+        <div class="chat-input-group">
+          <input type="text" id="global-chat-input" placeholder="Press Enter to chat..." maxlength="200">
+          <button class="emoji-toggle" type="button">😊</button>
+          <div class="emoji-picker"></div>
+        </div>
+      </div>
+    `;
+    
+    this.initializeEmojiPicker();
+    this.setupEventListeners();
+  }
+
+  initializeEmojiPicker() {
+    const emojiPicker = this.element.querySelector('.emoji-picker');
+    const emojiToggle = this.element.querySelector('.emoji-toggle');
+    const chatInput = this.element.querySelector('#global-chat-input');
+
+    if (!emojiPicker || !emojiToggle || this.initialized) return;
+
+    // Create emoji grid container
+    const gridContainer = document.createElement('div');
+    gridContainer.className = 'emoji-grid-container';
+
+    // Create category tabs
+    const tabContainer = document.createElement('div');
+    tabContainer.className = 'emoji-tabs';
+
+    Object.entries(EMOJI_CATEGORIES).forEach(([category, codes], index) => {
+      // Create tab
+      const tab = document.createElement('button');
+      tab.className = `emoji-tab ${index === 0 ? 'active' : ''}`;
+      tab.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+      tab.onclick = (e) => {
+        e.stopPropagation();
+        document.querySelectorAll('.emoji-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        showEmojiCategory(category);
+      };
+      tabContainer.appendChild(tab);
+
+      // Create emoji grid
+      const grid = document.createElement('div');
+      grid.className = `emoji-category ${index === 0 ? 'active' : ''}`;
+      grid.id = `emoji-${category}`;
+      
+      codes.forEach(code => {
+        const button = elementPool.div.pop() || document.createElement('button');
+        button.className = 'emoji-button';
+        button.onclick = () => {
+          const pos = chatInput.selectionStart;
+          chatInput.value = chatInput.value.slice(0, pos) + code + chatInput.value.slice(pos);
+          chatInput.focus();
+          chatInput.setSelectionRange(pos + code.length, pos + code.length);
+          emojiPicker.classList.remove('show');
+        };
+        
+        const img = elementPool.img.pop() || document.createElement('img');
+        img.src = EMOJIS[code];
+        img.alt = code;
+        button.appendChild(img);
+        grid.appendChild(button);
+      });
+      
+      gridContainer.appendChild(grid);
+    });
+
+    emojiPicker.appendChild(tabContainer);
+    emojiPicker.appendChild(gridContainer);
+    this.initialized = true;
+
+    // Event listeners
+    emojiToggle.onclick = () => emojiPicker.classList.toggle('show');
+    document.addEventListener('click', (e) => {
+      if (!emojiPicker.contains(e.target) && !emojiToggle.contains(e.target)) {
+        emojiPicker.classList.remove('show');
+      }
+    });
+  }
+
+  setupEventListeners() {
+    const chatInput = this.element.querySelector('#global-chat-input');
+    chatInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && gameState.localPlayer) {
+        const text = chatInput.value.trim().substring(0, 200);
+        if (text) {
+          updatePlayerMessage(gameState.localPlayer.id, text);
+          addChatMessage(gameState.localPlayer.id, text);
+          sendGameMessage({
+            type: 'chat',
+            playerId: gameState.localPlayer.id,
+            text
+          });
+          chatInput.value = '';
+        }
+      }
+    });
+  }
+}
 
 // Update player message handling
 const updatePlayerMessage = (playerId, text) => {
@@ -439,182 +541,199 @@ const updatePlayerMessage = (playerId, text) => {
 };
 
 // Handle chat messages
-const createChatMessage = (messages) => {
-  if (!Array.isArray(messages)) {
-    messages = [{ text: messages }];
-  }
+// const createChatMessage = (messages) => {
+//   if (!Array.isArray(messages)) {
+//     messages = [{ text: messages }];
+//   }
 
-  const container = document.createElement('div');
-  container.style.cssText = `
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  `;
+//   const container = document.createElement('div');
+//   container.style.cssText = `
+//     position: absolute;
+//     bottom: 100%;
+//     left: 50%;
+//     transform: translateX(-50%);
+//     display: flex;
+//     flex-direction: column;
+//     align-items: center;
+//   `;
 
-  messages.forEach((msg, index) => {
-    const messageElement = document.createElement('div');
-    messageElement.style.cssText = `
-      background: rgba(0,0,0,0.7);
-      color: white;
-      padding: 4px 8px;
-      border-radius: 12px;
-      max-width: 200px;
-      min-width: 50px;
-      word-wrap: break-word;
-      text-align: center;
-      margin-bottom: 5px;
-      opacity: ${1 - (index * 0.2)};
-    `;
+//   messages.forEach((msg, index) => {
+//     const messageElement = document.createElement('div');
+//     messageElement.style.cssText = `
+//       background: rgba(0,0,0,0.7);
+//       color: white;
+//       padding: 4px 8px;
+//       border-radius: 12px;
+//       max-width: 200px;
+//       min-width: 50px;
+//       word-wrap: break-word;
+//       text-align: center;
+//       margin-bottom: 5px;
+//       opacity: ${1 - (index * 0.2)};
+//     `;
 
-    // Handle emojis in message
-    const parts = msg.text.split(/(:[\w-]+:)/g);
-    parts.forEach(part => {
-      if (EMOJIS[part]) {
-        const emoji = document.createElement('img');
-        emoji.src = EMOJIS[part];
-        emoji.style.cssText = `
-          width: 24px;
-          height: 24px;
-          vertical-align: middle;
-          display: inline-block;
-          margin: 0 2px;
-        `;
-        messageElement.appendChild(emoji);
-      } else if (part.trim()) {
-        messageElement.appendChild(document.createTextNode(part));
-      }
-    });
+//     // Handle emojis in message
+//     const parts = msg.text.split(/(:[\w-]+:)/g);
+//     parts.forEach(part => {
+//       if (EMOJIS[part]) {
+//         const emoji = document.createElement('img');
+//         emoji.src = EMOJIS[part];
+//         emoji.style.cssText = `
+//           width: 24px;
+//           height: 24px;
+//           vertical-align: middle;
+//           display: inline-block;
+//           margin: 0 2px;
+//         `;
+//         messageElement.appendChild(emoji);
+//       } else if (part.trim()) {
+//         messageElement.appendChild(document.createTextNode(part));
+//       }
+//     });
 
-    container.appendChild(messageElement);
-  });
+//     container.appendChild(messageElement);
+//   });
 
-  return container;
-};
+//   return container;
+// };
 
 let emojiPickerInitialized = false;
-const initializeEmojiPicker = (chatBox) => {
-  if (emojiPickerInitialized) return; // Skip if already initialized
+// const initializeEmojiPicker = (chatBox) => {
+//   if (emojiPickerInitialized) return; // Skip if already initialized
   
-  const emojiToggle = chatBox.querySelector('.emoji-toggle');
-  const emojiPicker = chatBox.querySelector('.emoji-picker');
-  const chatInput = chatBox.querySelector('#global-chat-input');
+//   const emojiToggle = chatBox.querySelector('.emoji-toggle');
+//   const emojiPicker = chatBox.querySelector('.emoji-picker');
+//   const chatInput = chatBox.querySelector('#global-chat-input');
 
-  if (emojiToggle && emojiPicker) {
-    // Clear any existing content
-    emojiPicker.innerHTML = '';
+//   if (emojiToggle && emojiPicker) {
+//     // Clear any existing content
+//     emojiPicker.innerHTML = '';
     
-    // Remove once:true to keep the listener active
-    emojiToggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      emojiPicker.classList.toggle('show');
-    });
+//     // Remove once:true to keep the listener active
+//     emojiToggle.addEventListener('click', (e) => {
+//       e.stopPropagation();
+//       emojiPicker.classList.toggle('show');
+//     });
 
-    // Use a persistent document click handler
-    document.addEventListener('click', (e) => {
-      // Only close if clicking outside picker and toggle
-      if (!emojiPicker.contains(e.target) && !emojiToggle.contains(e.target)) {
-        emojiPicker.classList.remove('show');
-      }
-    });
+//     // Use a persistent document click handler
+//     document.addEventListener('click', (e) => {
+//       // Only close if clicking outside picker and toggle
+//       if (!emojiPicker.contains(e.target) && !emojiToggle.contains(e.target)) {
+//         emojiPicker.classList.remove('show');
+//       }
+//     });
 
-    // Create emoji categories
-    const tabContainer = document.createElement('div');
-    tabContainer.className = 'emoji-tabs';
+//     // Create emoji categories
+//     const tabContainer = document.createElement('div');
+//     tabContainer.className = 'emoji-tabs';
     
-    const gridContainer = document.createElement('div');
-    gridContainer.className = 'emoji-grid';
+//     const gridContainer = document.createElement('div');
+//     gridContainer.className = 'emoji-grid';
     
-    Object.entries(EMOJI_CATEGORIES).forEach(([category, codes], index) => {
-      // Create category tab
-      const tab = document.createElement('button');
-      tab.className = `emoji-tab ${index === 0 ? 'active' : ''}`;
-      tab.textContent = category.charAt(0).toUpperCase() + category.slice(1);
-      tab.onclick = (e) => {
-        e.stopPropagation();
-        document.querySelectorAll('.emoji-tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        showEmojiCategory(category);
-      };
-      tabContainer.appendChild(tab);
+//     Object.entries(EMOJI_CATEGORIES).forEach(([category, codes], index) => {
+//       // Create category tab
+//       const tab = document.createElement('button');
+//       tab.className = `emoji-tab ${index === 0 ? 'active' : ''}`;
+//       tab.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+//       tab.onclick = (e) => {
+//         e.stopPropagation();
+//         document.querySelectorAll('.emoji-tab').forEach(t => t.classList.remove('active'));
+//         tab.classList.add('active');
+//         showEmojiCategory(category);
+//       };
+//       tabContainer.appendChild(tab);
       
-      // Create emoji grid
-      const grid = document.createElement('div');
-      grid.className = `emoji-category ${index === 0 ? 'active' : ''}`;
-      grid.id = `emoji-${category}`;
+//       // Create emoji grid
+//       const grid = document.createElement('div');
+//       grid.className = `emoji-category ${index === 0 ? 'active' : ''}`;
+//       grid.id = `emoji-${category}`;
       
-      codes.forEach(code => {
-        const emojiButton = document.createElement('button');
-        emojiButton.className = 'emoji-button';
+//       codes.forEach(code => {
+//         const emojiButton = document.createElement('button');
+//         emojiButton.className = 'emoji-button';
         
-        const emojiImg = document.createElement('img');
-        emojiImg.src = EMOJIS[code];
-        emojiImg.title = code;
-        emojiImg.alt = code;
+//         const emojiImg = document.createElement('img');
+//         emojiImg.src = EMOJIS[code];
+//         emojiImg.title = code;
+//         emojiImg.alt = code;
         
-        emojiButton.appendChild(emojiImg);
-        emojiButton.onclick = () => {
-          const cursorPos = chatInput.selectionStart;
-          const textBefore = chatInput.value.substring(0, cursorPos);
-          const textAfter = chatInput.value.substring(cursorPos);
+//         emojiButton.appendChild(emojiImg);
+//         emojiButton.onclick = () => {
+//           const cursorPos = chatInput.selectionStart;
+//           const textBefore = chatInput.value.substring(0, cursorPos);
+//           const textAfter = chatInput.value.substring(cursorPos);
           
-          chatInput.value = textBefore + code + textAfter;
-          chatInput.focus();
-          chatInput.setSelectionRange(cursorPos + code.length, cursorPos + code.length);
-          emojiPicker.classList.remove('show');
-        };
+//           chatInput.value = textBefore + code + textAfter;
+//           chatInput.focus();
+//           chatInput.setSelectionRange(cursorPos + code.length, cursorPos + code.length);
+//           emojiPicker.classList.remove('show');
+//         };
         
-        grid.appendChild(emojiButton);
-      });
+//         grid.appendChild(emojiButton);
+//       });
       
-      gridContainer.appendChild(grid);
-    });
+//       gridContainer.appendChild(grid);
+//     });
     
-    emojiPicker.appendChild(tabContainer);
-    emojiPicker.appendChild(gridContainer);
+//     emojiPicker.appendChild(tabContainer);
+//     emojiPicker.appendChild(gridContainer);
     
-    emojiPickerInitialized = true; // Mark as initialized
-  }
-};
+//     emojiPickerInitialized = true; // Mark as initialized
+//   }
+// };
 
-const loadGameScene = async (sceneId) => {
-  try {
-    const scene = await sceneManager.createScene(sceneId, 20, 15);
+// const loadGameScene = async (sceneId) => {
+//   try {
+//     console.log('Loading scene:', sceneId);
     
-    // Load tilemap first
-    await scene.loadTilemap(TILEMAP_CONFIG.TILE_MAP_PATH);
-    
-    // Load scene data from JSON file
-    await scene.loadFromFile(`assets/scenes/${sceneId}.json`);
-    
-    // Update game state with scene
-    updateGameState({
-      currentScene: scene
-    });
+//     // Clear existing scene canvas
+//     if (sceneCanvas) {
+//       sceneCanvas.remove();
+//       sceneCanvas = null;
+//       sceneContext = null;
+//     }
 
-    console.log('Scene loaded successfully');
-  } catch (err) {
-    console.error('Error loading scene:', err);
-  }
-};
+//     const scene = await sceneManager.createScene(sceneId, 64, 128);
+    
+//     // Load tilemap first and wait for it
+//     console.log('Loading tilemap...');
+//     await scene.loadTilemap(TILEMAP_CONFIG.TILE_MAP_PATH);
+//     console.log('Tilemap loaded');
+    
+//     // Load scene data and wait for it
+//     console.log('Loading scene data...');
+//     await scene.loadFromFile(`assets/scenes/${sceneId}.json`);
+//     console.log('Scene data loaded');
+
+//     // Only update game state once everything is loaded
+//     if (scene.isLoaded) {
+//       updateGameState({
+//         currentScene: scene
+//       });
+//       console.log('Scene loaded successfully');
+//     } else {
+//       throw new Error('Scene failed to load completely');
+//     }
+
+//   } catch (err) {
+//     console.error('Error loading scene:', err);
+//     throw err;
+//   }
+// };
 
 // Keyboard movement controls
 document.addEventListener('keydown', (e) => {
   if (!gameState.localPlayer || !gameState.currentScene) return;
   
   const now = Date.now();
-  const speed = 5;
   let newX = gameState.localPlayer.x;
   let newY = gameState.localPlayer.y;
   
   switch (e.key) {
-    case 'ArrowLeft': newX -= speed; break;
-    case 'ArrowRight': newX += speed; break;
-    case 'ArrowUp': newY -= speed; break;
-    case 'ArrowDown': newY += speed; break;
+    case 'ArrowLeft': newX -= PLAYER_SPEED; break;
+    case 'ArrowRight': newX += PLAYER_SPEED; break;
+    case 'ArrowUp': newY -= PLAYER_SPEED; break;
+    case 'ArrowDown': newY += PLAYER_SPEED; break;
     default: return;
   }
 
@@ -636,8 +755,9 @@ document.addEventListener('keydown', (e) => {
     );
 
     updateGameState({
-      players: updatedPlayers,
-      localPlayer: { ...gameState.localPlayer, x: newX, y: newY }
+      players: [localPlayer],
+      localPlayer: localPlayer,
+      currentScene: gameState.currentScene
     });
     
     // Send movement update
@@ -658,26 +778,54 @@ document.addEventListener('keydown', (e) => {
 let isMouseDown = false;
 let mousePosition = { x: 0, y: 0 };
 let movementInterval = null;
+let lastFrameTime = 0;
+
+function movePlayerFrame(timestamp) {
+  if (!isMouseDown) return;
+  
+  const deltaTime = timestamp - lastFrameTime;
+  if (deltaTime >= MOVEMENT_FRAME_TIME) {
+    movePlayerTowardsMouse();
+    lastFrameTime = timestamp;
+  }
+  
+  movementInterval = requestAnimationFrame(movePlayerFrame);
+}
+
+const batchedUpdates = new Set();
+const BATCH_INTERVAL = 100; // Process batches every 100ms
+
+function processPlayerUpdates() {
+  if (batchedUpdates.size > 0) {
+    const updatedPlayers = gameState.players.map(player => {
+      const update = batchedUpdates.get(player.id);
+      return update ? {...player, ...update} : player;
+    });
+    
+    updateGameState({players: updatedPlayers});
+    batchedUpdates.clear();
+  }
+}
+
+setInterval(processPlayerUpdates, BATCH_INTERVAL);
 
 gameArea.addEventListener('mousedown', (e) => {
-  // Ignore clicks on chat box
   if (e.target.closest('.chat-box')) return;
-  
   if (!gameState.localPlayer || !gameState.currentScene) return;
-  isMouseDown = true;
   
-  // Store initial mouse position
-  const viewportX = gameState.currentScene.viewport.x || 0;
-  const viewportY = gameState.currentScene.viewport.y || 0;
+  isMouseDown = true;
+  const viewportX = gameState.currentScene.viewport?.x || 0;
+  const viewportY = gameState.currentScene.viewport?.y || 0;
+  
   mousePosition = {
     x: e.clientX - gameArea.getBoundingClientRect().left + viewportX,
     y: e.clientY - gameArea.getBoundingClientRect().top + viewportY
   };
-
-  // Start continuous movement
-  movementInterval = setInterval(() => {
-    movePlayerTowardsMouse();
-  }, 16);
+  
+  // Start movement immediately
+  movePlayerTowardsMouse();
+  // Use requestAnimationFrame instead of setInterval
+  movementInterval = requestAnimationFrame(movePlayerFrame);
 });
 
 gameArea.addEventListener('mousemove', (e) => {
@@ -697,7 +845,7 @@ gameArea.addEventListener('mousemove', (e) => {
 gameArea.addEventListener('mouseup', () => {
   isMouseDown = false;
   if (movementInterval) {
-    clearInterval(movementInterval);
+    cancelAnimationFrame(movementInterval);
     movementInterval = null;
   }
 });
@@ -705,119 +853,79 @@ gameArea.addEventListener('mouseup', () => {
 gameArea.addEventListener('mouseleave', () => {
   isMouseDown = false;
   if (movementInterval) {
-    clearInterval(movementInterval);
+    cancelAnimationFrame(movementInterval);
     movementInterval = null;
   }
 });
 
 function movePlayerTowardsMouse() {
-  if (!gameState.localPlayer || !gameState.currentScene) return;
+  if (!gameState.localPlayer || !gameState.currentScene || !isMouseDown) return;
 
-  const now = Date.now();
-  const dirX = mousePosition.x - gameState.localPlayer.x;
-  const dirY = mousePosition.y - gameState.localPlayer.y;
+  const now = performance.now();
+  
+  // Cache commonly used values
+  const {x: playerX, y: playerY} = gameState.localPlayer;
+  const dirX = mousePosition.x - playerX;
+  const dirY = mousePosition.y - playerY;
+  const playerSize = 64;
 
-  // Only move if we're not at destination
-  if (Math.abs(dirX) > 1 || Math.abs(dirY) > 1) {
-    const length = Math.sqrt(dirX * dirX + dirY * dirY);
-    const normalizedDirX = dirX / length;
-    const normalizedDirY = dirY / length;
+  // Early exit if already at destination
+  if (Math.abs(dirX) <= 1 && Math.abs(dirY) <= 1) return;
 
-    const speed = 5;
-    let newX = gameState.localPlayer.x + (normalizedDirX * speed);
-    let newY = gameState.localPlayer.y + (normalizedDirY * speed);
+  // Calculate scene bounds
+  const sceneWidth = gameState.currentScene.width * TILEMAP_CONFIG.TILE_SIZE * TILEMAP_CONFIG.SCALE;
+  const sceneHeight = gameState.currentScene.height * TILEMAP_CONFIG.TILE_SIZE * TILEMAP_CONFIG.SCALE;
 
-    // Calculate scene bounds
-    const sceneWidth = gameState.currentScene.width * TILEMAP_CONFIG.TILE_SIZE * TILEMAP_CONFIG.SCALE;
-    const sceneHeight = gameState.currentScene.height * TILEMAP_CONFIG.TILE_SIZE * TILEMAP_CONFIG.SCALE;
-    const playerSize = 64;
+  // Use pre-calculated values
+  const length = Math.hypot(dirX, dirY);
+  const normalizedDirX = dirX / length;
+  const normalizedDirY = dirY / length;
 
-    // Keep player within scene bounds
-    newX = Math.max(0, Math.min(newX, sceneWidth - playerSize));
-    newY = Math.max(0, Math.min(newY, sceneHeight - playerSize));
+  let boundedX = Math.max(0, Math.min(playerX + (normalizedDirX * PLAYER_SPEED), sceneWidth - playerSize));
+  let boundedY = Math.max(0, Math.min(playerY + (normalizedDirY * PLAYER_SPEED), sceneHeight - playerSize));
 
-    // Check collision at new position
-    if (!checkCollision(newX, newY)) {
-      // Update local state if no collision
-      const updatedPlayers = gameState.players.map(player => 
-        player.id === gameState.localPlayer.id 
-          ? { ...player, x: newX, y: newY }
-          : player
-      );
+  // Check collision at new position
+  if (!checkCollision(boundedX, boundedY)) {
+    // Update local state if no collision
+    const updatedPlayers = gameState.players.map(player => 
+      player.id === gameState.localPlayer.id 
+        ? { ...player, x: boundedX, y: boundedY }
+        : player
+    );
 
-      updateGameState({
-        players: updatedPlayers,
-        localPlayer: { ...gameState.localPlayer, x: newX, y: newY }
+    updateGameState({
+      players: updatedPlayers,
+      localPlayer: { ...gameState.localPlayer, x: boundedX, y: boundedY }
+    });
+
+    // Throttle network updates independently of movement
+    if (now - lastMovementSent >= MOVEMENT_INTERVAL) {
+      sendGameMessage({
+        type: 'movement',
+        playerId: gameState.localPlayer.id,
+        x: boundedX,
+        y: boundedY,
+        timestamp: now
       });
-
-      // Throttle network updates
-      if (now - lastMovementSent >= MOVEMENT_INTERVAL) {
-        sendGameMessage({
-          type: 'movement',
-          playerId: gameState.localPlayer.id,
-          x: newX,
-          y: newY,
-          timestamp: now
-        });
-        lastMovementSent = now;
-      }
+      lastMovementSent = now;
     }
   }
 }
 
-const handleChatMessage = (message) => {
-  const player = gameState.players.find(p => p.id === message.playerId);
-  if (player) {
-    player.message = message.text;
-    // Clear message after 3 seconds
-    setTimeout(() => {
-      const updatedPlayers = gameState.players.map(p => 
-        p.id === message.playerId ? {...p, message: null} : p
-      );
-      updateGameState({ players: updatedPlayers });
-    }, 3000);
-    renderGame();
-  }
-};
-
-const EMOJIS = {
-  ':alert:': 'assets/images/ui/emotes/emote_alert.png',
-  ':anger:': 'assets/images/ui/emotes/emote_anger.png',
-  ':bars:': 'assets/images/ui/emotes/emote_bars.png',
-  ':cash:': 'assets/images/ui/emotes/emote_cash.png',
-  ':circle:': 'assets/images/ui/emotes/emote_circle.png',
-  ':cloud:': 'assets/images/ui/emotes/emote_cloud.png',
-  ':cross:': 'assets/images/ui/emotes/emote_cross.png',
-  ':dots1:': 'assets/images/ui/emotes/emote_dots1.png',
-  ':dots2:': 'assets/images/ui/emotes/emote_dots2.png',
-  ':dots3:': 'assets/images/ui/emotes/emote_dots3.png',
-  ':drop:': 'assets/images/ui/emotes/emote_drop.png',
-  ':drops:': 'assets/images/ui/emotes/emote_drops.png',
-  ':exclamation:': 'assets/images/ui/emotes/emote_exclamation.png',
-  ':exclamations:': 'assets/images/ui/emotes/emote_exclamations.png',
-  ':angry:': 'assets/images/ui/emotes/emote_faceAngry.png',
-  ':happy:': 'assets/images/ui/emotes/emote_faceHappy.png',
-  ':sad:': 'assets/images/ui/emotes/emote_faceSad.png',
-  ':heart:': 'assets/images/ui/emotes/emote_heart.png',
-  ':heartbroken:': 'assets/images/ui/emotes/emote_heartBroken.png',
-  ':hearts:': 'assets/images/ui/emotes/emote_hearts.png',
-  ':idea:': 'assets/images/ui/emotes/emote_idea.png',
-  ':laugh:': 'assets/images/ui/emotes/emote_laugh.png',
-  ':music:': 'assets/images/ui/emotes/emote_music.png',
-  ':question:': 'assets/images/ui/emotes/emote_question.png',
-  ':sleep:': 'assets/images/ui/emotes/emote_sleep.png',
-  ':sleeps:': 'assets/images/ui/emotes/emote_sleeps.png',
-  ':star:': 'assets/images/ui/emotes/emote_star.png',
-  ':stars:': 'assets/images/ui/emotes/emote_stars.png',
-  ':swirl:': 'assets/images/ui/emotes/emote_swirl.png',
-  // Add more emoji mappings here
-};
-
-const EMOJI_CATEGORIES = {
-  faces: [':angry:', ':happy:', ':sad:'],
-  symbols: [':heart:', ':hearts:', ':heartbroken:', ':laugh:', ':sleep:', ':sleeps:', ':star:', ':stars:', ':question:', ':exclamation:', ':exclamations:', ':idea:'],
-  misc: [':cloud:', ':drop:', ':drops:', ':swirl:', ':music:', ':bars:', ':cash:', ':circle:', ':cross:', ':dots1:', ':dots2:', ':dots3:']
-};
+// const handleChatMessage = (message) => {
+//   const player = gameState.players.find(p => p.id === message.playerId);
+//   if (player) {
+//     player.message = message.text;
+//     // Clear message after 3 seconds
+//     setTimeout(() => {
+//       const updatedPlayers = gameState.players.map(p => 
+//         p.id === message.playerId ? {...p, message: null} : p
+//       );
+//       updateGameState({ players: updatedPlayers });
+//     }, 3000);
+//     renderGame();
+//   }
+// };
 
 function showEmojiCategory(category) {
   document.querySelectorAll('.emoji-category').forEach(grid => {
@@ -892,7 +1000,6 @@ document.addEventListener('keypress', (e) => {
   }
 });
 
-
 function checkCollision(x, y) {
   if (!gameState.currentScene) return false;
 
@@ -920,3 +1027,78 @@ function checkCollision(x, y) {
     });
   });
 }
+
+export const handleGameMessage = (data) => {
+  switch (data.type) {
+    case 'player_joined':
+      // Add new player if they don't exist
+      if (!gameState.players.find(p => p.id === data.id)) {
+        gameState.players.push(data.player);
+        updateGameState({ players: gameState.players });
+      }
+      break;
+
+    case 'request_players':
+      // Send current players list to new player
+      sendGameMessage({
+        type: 'player_list',
+        players: gameState.players
+      });
+      break;
+
+    case 'player_list':
+      // Update our players list with existing players
+      updateGameState({ 
+        players: [...new Set([...gameState.players, ...data.players])]
+      });
+      break;
+
+    case 'player_sync':
+      // Update player's state
+      const syncIndex = gameState.players.findIndex(p => p.id === data.player.id);
+      if (syncIndex !== -1) {
+        gameState.players[syncIndex] = {
+          ...gameState.players[syncIndex],
+          ...data.player,
+          lastSeen: Date.now()
+        };
+        updateGameState({ players: gameState.players });
+      }
+      break;
+
+    case 'movement':
+      // Handle player movement with interpolation
+      handlePlayerMovement(data);
+      break;
+
+    case 'chat':
+      // Handle chat messages
+      const chatPlayer = gameState.players.find(p => p.id === data.playerId);
+      if (chatPlayer) {
+        updatePlayerMessage(data.playerId, data.text);
+        addChatMessage(data.playerId, data.text);
+      }
+      break;
+
+    case 'avatar_update':
+      // Update player's avatar
+      const avatarIndex = gameState.players.findIndex(p => p.id === data.playerId);
+      if (avatarIndex !== -1) {
+        gameState.players[avatarIndex] = {
+          ...gameState.players[avatarIndex],
+          avatar: data.avatar
+        };
+        updateGameState({ players: gameState.players });
+      }
+      break;
+
+    case 'player_left':
+      // Remove disconnected player
+      const remainingPlayers = gameState.players.filter(p => p.id !== data.playerId);
+      updateGameState({ players: remainingPlayers });
+      break;
+
+    default:
+      console.warn('Unknown message type:', data.type);
+  }
+};

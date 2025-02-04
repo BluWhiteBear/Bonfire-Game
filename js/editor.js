@@ -1,3 +1,6 @@
+import { connectToPeer, sendGameMessage, closeConnection } from './peer.js';
+import { TILEMAP_CONFIG } from './scene.js';
+
 class LevelEditor {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);

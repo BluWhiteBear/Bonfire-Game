@@ -1,12 +1,29 @@
+import { connectToPeer, sendGameMessage, closeConnection } from './peer.js';
+import { updateGameState } from './main.js';
+
+const CACHE_MAX_SIZE = 1000;
+
+// // Tilemap 1
 const TILEMAP_CONFIG = {
-    TILE_MAP_PATH: 'assets/images/environment/roguelikeSheet_transparent.png',
-    TILE_SIZE: 16,
-    TILE_ROWS: 57,
-    TILE_COLUMNS: 31,
-    TILE_PADDING: 1,
-    SCALE: 2, // Increased scale for larger tiles
-    DEFAULT_TILE: 6 // Default empty tile index
+  TILE_MAP_PATH: 'assets/images/environment/roguelikeSheet_transparent.png',
+  TILE_SIZE: 16,
+  TILE_ROWS: 57,
+  TILE_COLUMNS: 31,
+  TILE_PADDING: 1,
+  SCALE: 2,
+  DEFAULT_TILE: 6
 };
+
+// Tilemap 2
+// const TILEMAP_CONFIG = {
+//   TILE_MAP_PATH: 'assets/images/environment/spr_tileset_sunnysideworld_16px.png',
+//   TILE_SIZE: 16,
+//   TILE_ROWS: 57,
+//   TILE_COLUMNS: 31,
+//   TILE_PADDING: 0,
+//   SCALE: 2,
+//   DEFAULT_TILE: 6
+// };
   
 class Scene {
   constructor(width, height) {
@@ -14,12 +31,15 @@ class Scene {
     this.height = height;
     this.layers = [];
     this.tilemapSprites = new Map();
+    this.tileCache = new Map();
+    this.cacheSize = 0;
     this.viewport = {
       x: 0,
       y: 0,
       width: 0,
       height: 0
     };
+    this.isLoaded = false; 
   }
   
     // Load tilemap sprite sheet
@@ -80,7 +100,7 @@ class Scene {
       if (sceneData.layers) {
         this.layers = sceneData.layers.map(layer => ({
           name: layer.name,
-          tiles: layer.tiles.map(row => [...row]) // Deep copy tiles array
+          tiles: layer.tiles.map(row => [...row])
         }));
       } else {
         // Single layer format - convert to layers format
@@ -89,6 +109,8 @@ class Scene {
           tiles: sceneData.tiles.map(row => [...row])
         }];
       }
+      
+      this.isLoaded = true; // Add this line
     }
 
     async loadFromFile(jsonPath) {
@@ -102,48 +124,70 @@ class Scene {
       }
     }
 
+    cleanCache() {
+      if (this.cacheSize > CACHE_MAX_SIZE) {
+        const entriesToRemove = Math.floor(CACHE_MAX_SIZE * 0.2); // Remove 20% of cache
+        let count = 0;
+        for (const key of this.tileCache.keys()) {
+          this.tileCache.delete(key);
+          count++;
+          if (count >= entriesToRemove) break;
+        }
+        this.cacheSize = this.tileCache.size;
+      }
+    }
+
     setViewport(x, y, width, height) {
       this.viewport = { x, y, width, height };
     }
   
-    // Update render method to use tilemap sprites
     render(ctx) {
-      // Disable image smoothing for pixel-perfect rendering
+      if (!ctx) return;
+  
       ctx.imageSmoothingEnabled = false;
-      ctx.webkitImageSmoothingEnabled = false;
-      ctx.mozImageSmoothingEnabled = false;
-      ctx.msImageSmoothingEnabled = false;
-  
       const scaledTileSize = TILEMAP_CONFIG.TILE_SIZE * TILEMAP_CONFIG.SCALE;
+      
+      // Calculate visible range
+      const startTileX = Math.max(0, Math.floor(this.viewport.x / scaledTileSize));
+      const startTileY = Math.max(0, Math.floor(this.viewport.y / scaledTileSize));
+      const endTileX = Math.min(this.width, startTileX + Math.ceil(ctx.canvas.width / scaledTileSize) + 1);
+      const endTileY = Math.min(this.height, startTileY + Math.ceil(ctx.canvas.height / scaledTileSize) + 1);
   
-      // Draw each layer from bottom to top
+      // Draw visible tiles using cache
       this.layers.forEach(layer => {
-        for (let y = 0; y < this.height; y++) {
-          for (let x = 0; x < this.width; x++) {
+        for (let y = startTileY; y < endTileY; y++) {
+          for (let x = startTileX; x < endTileX; x++) {
             const tileType = layer.tiles[y][x];
-            if (tileType === TILEMAP_CONFIG.DEFAULT_TILE) continue; // Skip empty tiles
-            
-            const tileSprite = this.tilemapSprites.get(tileType);
-            if (tileSprite) {
-              const screenX = x * scaledTileSize;
-              const screenY = y * scaledTileSize;
+            if (tileType === TILEMAP_CONFIG.DEFAULT_TILE) continue;
+  
+            const cacheKey = `${tileType}_${scaledTileSize}`;
+            let renderedTile = this.tileCache.get(cacheKey);
+  
+            if (!renderedTile) {
+              const sprite = this.tilemapSprites.get(tileType);
+              if (!sprite) continue;
+  
+              // Create and cache scaled tile
+              const tileCanvas = document.createElement('canvas');
+              tileCanvas.width = scaledTileSize;
+              tileCanvas.height = scaledTileSize;
+              const tileCtx = tileCanvas.getContext('2d');
+              tileCtx.imageSmoothingEnabled = false;
+              tileCtx.drawImage(sprite, 0, 0, scaledTileSize, scaledTileSize);
               
-              // Only render tiles that are visible in the game area
-              if (screenX >= -scaledTileSize && 
-                  screenX <= ctx.canvas.width && 
-                  screenY >= -scaledTileSize && 
-                  screenY <= ctx.canvas.height) {
-                ctx.drawImage(tileSprite, 
-                  screenX, screenY,
-                  scaledTileSize, scaledTileSize
-                );
-              }
+              this.tileCache.set(cacheKey, tileCanvas);
+              renderedTile = tileCanvas;
             }
+  
+            const screenX = x * scaledTileSize - this.viewport.x;
+            const screenY = y * scaledTileSize - this.viewport.y;
+            ctx.drawImage(renderedTile, screenX, screenY);
           }
         }
       });
     }
   }
+  
   
   // Example scene data format
   const exampleScene = 
@@ -327,3 +371,34 @@ class Scene {
   
   // Export for use in other files
   const sceneManager = new SceneManager();
+
+  export const loadGameScene = async (sceneId) => {
+    try {
+      const scene = await sceneManager.createScene(sceneId, 64, 128);
+      
+      // Load tilemap first
+      await scene.loadTilemap(TILEMAP_CONFIG.TILE_MAP_PATH);
+      
+      // Load scene data
+      await scene.loadFromFile(`assets/scenes/${sceneId}.json`);
+      
+      if (scene.isLoaded) {
+        updateGameState({
+          currentScene: scene
+        });
+        console.log('Scene loaded successfully');
+      } else {
+        throw new Error('Scene failed to load completely');
+      }
+  
+    } catch (err) {
+      console.error('Error loading scene:', err);
+      throw err;
+    }
+  };
+
+  export {
+    Scene,
+    SceneManager,
+    TILEMAP_CONFIG
+  };
