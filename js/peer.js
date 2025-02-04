@@ -49,9 +49,7 @@ const connectToPeer = async () => {
     const urlParams = new URLSearchParams(window.location.search);
     const roomId = urlParams.get('room');
     
-    // If we have a room ID in URL, we're joining
     if (roomId) {
-      // Validate room ID first
       if (!isValidRoomId(roomId)) {
         throw new Error('Invalid room ID format');
       }
@@ -62,11 +60,12 @@ const connectToPeer = async () => {
         const conn = peer.connect(roomId, {
           reliable: true,
           serialization: 'json',
-          metadata: { timestamp: Date.now() }
+          metadata: { timestamp: Date.now() },
+          config: PEER_CONFIG // Pass ICE server config
         });
 
-        const maxAttempts = 3;
-        const timeout = 8000;
+        const maxAttempts = 5; // Increased attempts
+        const timeout = 12000; // Increased timeout for TURN fallback
         let attempts = 0;
 
         const attemptConnection = () => {
@@ -91,7 +90,13 @@ const connectToPeer = async () => {
           conn.on('error', (err) => {
             clearTimeout(timeoutId);
             console.error('Connection error:', err);
-            reject(new Error('Connection failed. Please try again.'));
+            if (attempts < maxAttempts - 1) {
+              attempts++;
+              console.log(`Connection failed, trying again (${attempts}/${maxAttempts})`);
+              attemptConnection();
+            } else {
+              reject(new Error('Connection failed after multiple attempts. Please try again.'));
+            }
           });
         };
 
@@ -99,22 +104,14 @@ const connectToPeer = async () => {
       });
     }
     
-    // If we're creating a new room
+    // Creating new room...
     const newRoomId = peer.id;
     window.history.replaceState({}, '', `?room=${newRoomId}`);
     isConnected = true;
     
-    // Create data channel for host
-    dataChannel = {
-      open: true,
-      send: (message) => {
-        if (message.type === 'player_sync') {
-          handleGameMessage(message);
-        }
-      }
-    };
-
+    // Create data channel for host...
     return newRoomId;
+
   } catch (err) {
     console.error('Connection failed:', err);
     throw err;
